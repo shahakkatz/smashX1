@@ -6,10 +6,6 @@
 #include <sys/wait.h>
 #include <iomanip>
 #include "Commands.h"
-#include <fcntl.h>
-#include <wait.h>
-#include <stdlib.h>
-#include <fstream>
 
 #define BASHPATH "/bin/bash"
 #define MAX_SIZE 200
@@ -58,7 +54,6 @@ int _parseCommandLine(const char* cmd_line, char** args) {
 
     FUNC_EXIT()
 }
-int isRedirectOrPipe(string cmd_line);
 
 bool _isBackgroundComamnd(const char* cmd_line) {
     const string str(cmd_line);
@@ -89,6 +84,7 @@ SmallShell::SmallShell() {
     Prompt="smash";
     previosdir[0]=0;
     backgroundJobs= new JobsList;
+    Job_in_fg= nullptr;
 }
 
 SmallShell::~SmallShell() {
@@ -104,19 +100,8 @@ Command * SmallShell::CreateCommand(const char* cmd_line) {
     string cmd_s = _trim(string(cmd_line));
     string firstWord = cmd_s.substr(0, cmd_s.find_first_of(" \n"));
     char last_char = *(cmd_s.end());
-    int type= isRedirectOrPipe(cmd_line);
-    if(type!=0){
-        if(type==1||type==2)
-            return new RedirectionCommand(cmd_line,this,type);
-        if(type==3||type==4)
-            return new PipeCommand(cmd_line, this,type);
-
-    }
     if (firstWord.compare("chprompt") == 0) {
         return new ChangePrompt(cmd_line,this);
-    }
-    if (firstWord.compare("cat") == 0) {
-        return new CatCommand(cmd_line,this);
     }
     else if (firstWord.compare("pwd") == 0) {
         return new GetCurrDirCommand(cmd_line,this);
@@ -137,7 +122,7 @@ Command * SmallShell::CreateCommand(const char* cmd_line) {
         return new ForegroundCommand(cmd_line,this);
     }
     else if (firstWord.compare("bg") == 0) {
-        //return new BackgroundCommand(cmd_line,this);
+        return new BackgroundCommand(cmd_line,this);
     }
     else if (firstWord.compare("quit") == 0) {
         return new QuitCommand(cmd_line,this);
@@ -230,7 +215,7 @@ void ChangeDirCommand::execute() {
     }
 }
 
-JobsList::JobEntry::JobEntry(int JobId, Command *command, int processID) : JobId(JobId),command(command),ProcessID(processID){
+JobsList::JobEntry::JobEntry(int JobId, Command *command, pid_t processID) : JobId(JobId),command(command),ProcessID(processID){
         this->SecondsElapsed= time(nullptr);
         this->IsFinished= false;
         this->IsStopped= false;
@@ -281,8 +266,8 @@ JobsList::~JobsList() {
 }
 
 void JobsList::addJob(Command *cmd, pid_t pid, bool isStopped) {
-    int ProcessID= pid;
-    JobEntry *NewJob= new JobEntry(this->MaxJobId+1,cmd,ProcessID);
+    JobEntry *NewJob= new JobEntry(this->MaxJobId+1,cmd,pid);
+    NewJob->IsStopped=isStopped;
     MaxJobId++;
     this->EntryJobs->push_back(*NewJob);
 
@@ -303,7 +288,7 @@ void JobsList::printJobsList() {
 void JobsList::killAllJobs() {
     auto it= this->EntryJobs->begin();
     while(it!=this->EntryJobs->end()){
-        pid_t pid=it->GetProcessID();
+        pid_t pid=it->command->pid;
         kill(pid,SIGKILL);
         it++;
     }
@@ -313,7 +298,7 @@ void JobsList::killAllJobs() {
 void JobsList::removeFinishedJobs() {
     auto it= this->EntryJobs->begin();
     while(it!=EntryJobs->end()){
-        int result= waitpid(it->GetProcessID(),NULL,WNOHANG);
+        int result= waitpid(it->command->pid,NULL,WNOHANG);
         if (result>0)
             EntryJobs->erase(it);
         if(result==-1){
@@ -359,10 +344,13 @@ void ExternalCommand::execute() {
     }
     if (pid!=0){
         if(!isBackground){
-            wait(&status);
-            if(status==-1){
+            auto* Job = new JobsList::JobEntry(MyShell->backgroundJobs->MaxJobId+1,this,pid);
+            MyShell->Job_in_fg=Job;
+            MyShell->backgroundJobs->MaxJobId++;
+            if(waitpid(pid, nullptr, WUNTRACED)==-1){
                 perror("smash error: wait failed!");
             }
+            MyShell->Job_in_fg= nullptr;
             return;
         }else{
             MyShell->backgroundJobs->addJob(this, pid);
@@ -370,7 +358,6 @@ void ExternalCommand::execute() {
         }
     }else{
         char exec_line[MAX_SIZE];
-        _trim(c_line);
         strcpy(exec_line, c_line);
         if(exec_line[0] != '\000') {
             _removeBackgroundSign(exec_line);
@@ -418,7 +405,9 @@ JobsCommand::JobsCommand(const char *cmd_line, SmallShell *sheli) : BuiltInComma
 void KillCommand::execute() {
     auto it = this->MyShell->backgroundJobs->getJobById(stoi(this->args[2]));
     if (!it){
-        perror("smash error: kill: job-id <job-id> does not exist");
+        string s = this->args[2];
+        string error= "smash error: kill: job-id "+s+" does not exist";
+        perror(error.c_str());
         return;
     }
     ///*********************** this check is not perfect ************************///
@@ -454,129 +443,85 @@ ForegroundCommand::ForegroundCommand(const char *cmd_line, SmallShell *sheli) : 
 
 void ForegroundCommand::execute() {
     /// insert checks here///
+    int* status;
     auto it = MyShell->backgroundJobs->EntryJobs->begin();
-    if (this->NumOfArgs==1) {
+    if (this->NumOfArgs==2) {
         while (it != MyShell->backgroundJobs->EntryJobs->end()) {
             if (it->GetJobID() == stoi(this->args[1])) {
-                it->command->execute();
-                cout<<it->command->pid<<it->command->c_line<<it->SecondsElapsed<<endl;
+                cout<<it->command->c_line<<it->getDuration()<<endl;
+                MyShell->Job_in_fg= MyShell->backgroundJobs->getJobById(it->GetJobID());
                 MyShell->backgroundJobs->removeJobById(it->GetJobID());
+                waitpid(it->command->pid,status,WUNTRACED);
                 return;
 
             }
 
             it++;
         }
-    }else if(this->NumOfArgs==0){
-        int max=it->GetJobID();
-        while (it != MyShell->backgroundJobs->EntryJobs->end()){
-            if(it->GetJobID()>max)
-                max=it->GetJobID();
+        string s= this->args[1];
+        string error="smash error: fg: job-id "+s+ "does not exist";
+        perror(error.c_str());
+    }else if(this->NumOfArgs==1){
+        if(MyShell->backgroundJobs->EntryJobs->empty()){
+            perror("smash error: fg: jobs list is empty");
+            return;
+        }
+        int max=MyShell->backgroundJobs->MaxJobId;
+        JobsList::JobEntry* temp=MyShell->backgroundJobs->getJobById(max);
+        cout<<temp->command->c_line<<" "<<temp->getDuration()<<endl;
+        waitpid(temp->command->pid,NULL, WUNTRACED);
+        MyShell->Job_in_fg=temp;
+        MyShell->backgroundJobs->removeJobById(max);
+    } else
+        perror("smash error: fg: invalid arguments");
+
+}
+
+BackgroundCommand::BackgroundCommand(const char *cmd_line, SmallShell* sheli): BuiltInCommand(cmd_line,sheli) {
+
+}
+
+void BackgroundCommand::execute() {
+    if (this->NumOfArgs==1){
+        auto it = this->MyShell->backgroundJobs->EntryJobs->begin();
+        while (it!=this->MyShell->backgroundJobs->EntryJobs->end()){
+            if(it->IsStopped){
+                it->IsStopped=0;
+                cout<<it->command->c_line<<" : "<<it->getDuration()<<endl;
+                kill(it->command->pid,SIGCONT);
+                MyShell->backgroundJobs->removeJobById(it->GetJobID());
+                return;
+            }
             it++;
         }
-        MyShell->backgroundJobs->getJobById(max)->command->execute();
-        cout<<it->command->pid<<it->command->c_line<<it->SecondsElapsed<<endl;
-        MyShell->backgroundJobs->removeJobById(max);
-    }
-
-}
-int isRedirectOrPipe(string cmd_line){
-    size_t found=cmd_line.find(">>");
-    if(found!=string::npos) {
-        /** APPEND **/
-        return 2;
-    }
-    found=cmd_line.find(">");
-    if(found!=string::npos){
-        /** NEW TEXT FILE **/
-        return 1;
-
-    }
-    found=cmd_line.find("|&");
-    if(found!=string::npos) {
-        /** ERR PIPE **/
-        return 4;
-    }
-    found=cmd_line.find('|');
-    if(found!=string::npos) {
-        /** PIPE **/
-        return 3;
-    }
-
-    return 0;
-
-}
-
-RedirectionCommand::RedirectionCommand(const char *cmdLine, SmallShell *sheli, int type) : Command(cmdLine, sheli) {
-    TypeOfRed=type;
-
-}
-
-void RedirectionCommand::execute() {
-    string line_cmd(this->c_line);
-    string fileName = _trim(line_cmd.substr(line_cmd.find_first_of(">|") + 2));
-    int flags;
-    if(this->TypeOfRed==1) flags=(O_RDWR | O_CREAT | O_TRUNC);
-    if(this->TypeOfRed==2) flags=(O_WRONLY | O_APPEND | O_CREAT);
-    int stdout_copy = dup(STDOUT_FILENO);
-    int fd = open(fileName.c_str(), flags, 0666);
-    dup2(fd, STDOUT_FILENO);
-    string NewCmd = line_cmd.substr(0, line_cmd.find_first_of('>'));
-    Command *cmd = this->MyShell->CreateCommand(NewCmd.c_str());
-    cmd->execute();
-    dup2(stdout_copy, STDOUT_FILENO);
-    close(stdout_copy);
-    close(fd);
-}
-PipeCommand::PipeCommand(const char *cmd_line, SmallShell *sheli,int type) : Command(cmd_line, sheli) {
-    this->Type=type;
-}
-
-void PipeCommand::execute() {
-    int out;
-    if(this->Type==3) out= STDOUT_FILENO;
-    if (this->Type==4) out= STDERR_FILENO;
-    int fd[2];
-    pipe(fd);
-    string cmd_line(c_line);
-    string First=_trim(cmd_line.substr(0,cmd_line.find('|')));
-    string Second=_trim(cmd_line.substr(cmd_line.find('|')+1));
-    int stdout_copy=dup(STDOUT_FILENO);
-    dup2(fd[1],STDOUT_FILENO);
-    Command* Left=this->MyShell->CreateCommand(First.c_str());
-    Left->execute();
-    dup2(stdout_copy,STDOUT_FILENO);
-    close(stdout_copy);
-    close(fd[1]);
-    int stdin_copy=dup(STDIN_FILENO);
-    dup2(fd[0],STDIN_FILENO);
-    Command* Right=this->MyShell->CreateCommand(Second.c_str());
-    Right->execute();
-    dup2(stdin_copy,STDIN_FILENO);
-    close(stdin_copy);
-    close(fd[0]);
-}
-
-
-CatCommand::CatCommand(const char *cmd_line, SmallShell *sheli) : BuiltInCommand(cmd_line, sheli) {
-
-}
-
-void CatCommand::execute() {
-    if(this->NumOfArgs==1){
-        cout<<"smash error: cat: not enough arguments"<<endl;
-    }
-    string line;
-    for(int i=1;i<this->NumOfArgs;i++){
-        ifstream myfile (this->args[i]);
-        if(myfile.is_open()){
-            while(getline(myfile,line)){
-                cout<<line<<endl;
+        perror("smash error: bg: there is no stopped jobs to resume");
+        return;
+    }else if(this->NumOfArgs==2) {
+        int JobId=stoi(this->args[0]);
+        auto it = this->MyShell->backgroundJobs->EntryJobs->begin();
+        while (it != this->MyShell->backgroundJobs->EntryJobs->end()) {
+            if (it->GetJobID()==JobId ){
+                if(!it->IsStopped){
+                    string s= this->args[1];
+                    string error= "smash error: bg: job-id "+s+"is already running in the background";
+                    perror(error.c_str());
+                    return;
+                }else{
+                    it->IsStopped=0;
+                    cout<<it->command->c_line<<" : "<<it->getDuration()<<endl;
+                    kill(it->GetProcessID(),SIGCONT);
+                    MyShell->backgroundJobs->removeJobById(JobId);
+                    return;
+                }
             }
-            myfile.close();
-
+            it++;
         }
+        string s= this->args[1];
+        string error= "smash error: bg: job-id "+s+"does not exist";
+        perror(error.c_str());
+        return;
 
     }
-
 }
+
+

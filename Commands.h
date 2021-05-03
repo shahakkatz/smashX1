@@ -40,8 +40,7 @@ public:
 class PipeCommand : public Command {
     // TODO: Add your data members
 public:
-    int Type;
-    PipeCommand(const char* cmd_line,SmallShell* sheli,int type);
+    PipeCommand(const char* cmd_line,SmallShell* sheli);
     virtual ~PipeCommand() {}
     void execute() override;
 };
@@ -49,8 +48,7 @@ public:
 class RedirectionCommand : public Command {
     // TODO: Add your data members
 public:
-    int TypeOfRed;
-    explicit RedirectionCommand(const char *cmdLine, SmallShell *sheli, int type);
+    explicit RedirectionCommand(const char* cmd_line);
     virtual ~RedirectionCommand() {}
     void execute() override;
     //void prepare() override;
@@ -65,6 +63,7 @@ public:
     virtual ~ChangeDirCommand() {}
     void execute() override;
 };
+
 
 class GetCurrDirCommand : public BuiltInCommand {
 public:
@@ -107,7 +106,7 @@ public:
         // TODO: Add your data members
         int JobId;
 
-        int ProcessID;
+        pid_t ProcessID;
 
 
     public:
@@ -115,7 +114,7 @@ public:
         Command* command;
         bool IsStopped;
         bool IsFinished;
-        JobEntry(int JobId, Command* command, int processID);
+        JobEntry(int JobId, Command* command, pid_t processID);
         ~JobEntry()=default;
         void StopJob();
         char* GetJobCommandLine();
@@ -170,14 +169,14 @@ public:
 class BackgroundCommand : public BuiltInCommand {
     // TODO: Add your data members
 public:
-    BackgroundCommand(const char* cmd_line, JobsList* jobs);
+    BackgroundCommand(const char* cmd_line, SmallShell* sheli);
     virtual ~BackgroundCommand() {}
     void execute() override;
 };
 
 class CatCommand : public BuiltInCommand {
 public:
-    CatCommand(const char* cmd_line,SmallShell* sheli);
+    CatCommand(const char* cmd_line);
     virtual ~CatCommand() {}
     void execute() override;
 };
@@ -188,6 +187,7 @@ private:
 
     SmallShell();
 public:
+    JobsList::JobEntry* Job_in_fg;
     JobsList* backgroundJobs;
     Command *CreateCommand(const char* cmd_line);
     SmallShell(SmallShell const&)      = delete; // disable copy ctor

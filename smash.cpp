@@ -19,9 +19,10 @@ int main(int argc, char* argv[]) {
     while(true) {
         std::cout << " "<<smash.Prompt<<"> ";
         std::string cmd_line;
+        //std::cin.clear();
+        //std::fflush(stdin);
         std::getline(std::cin, cmd_line);
         smash.executeCommand(cmd_line.c_str());
-
     }
     return 0;
 }
